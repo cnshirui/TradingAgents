@@ -5,6 +5,7 @@ from collections import deque
 from functools import wraps
 from pathlib import Path
 
+import click
 import typer
 from rich import box
 from rich.align import Align
@@ -17,6 +18,7 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
+from typer.core import TyperGroup
 
 from cli.announcements import display_announcements, fetch_announcements
 from cli.stats_handler import StatsCallbackHandler
@@ -33,6 +35,7 @@ from cli.utils import (
     ensure_api_key,
     get_ticker,
     prompt_openai_compatible_url,
+    read_analysis_preset,
     resolve_backend_url,
     select_analysts,
     select_deep_thinking_agent,
@@ -52,8 +55,22 @@ from tradingagents.reporting import write_report_tree
 
 console = Console()
 
+
+class PresetShortcutGroup(TyperGroup):
+    """Allow `tradingagents MU.txt` as shorthand for `tradingagents analyze MU.txt`."""
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            if args and Path(args[0]).suffix.lower() == ".txt":
+                return super().resolve_command(ctx, ["analyze", *args])
+            raise
+
+
 app = typer.Typer(
     name="TradingAgents",
+    cls=PresetShortcutGroup,
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
 )
@@ -479,8 +496,84 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
 
 
-def get_user_selections():
+def _preset_provider_from_models(quick_llm: str, deep_llm: str) -> str | None:
+    """Infer Ollama for common local model IDs like qwen2.5:7b."""
+    model_ids = (quick_llm, deep_llm)
+    if any(":" in model_id and "/" not in model_id for model_id in model_ids):
+        return "ollama"
+    return None
+
+
+def _resolve_preset_file(preset_file: Path) -> Path:
+    if preset_file.exists():
+        return preset_file
+    stocks_path = Path.cwd() / "stocks" / preset_file
+    if not preset_file.is_absolute() and stocks_path.exists():
+        return stocks_path
+    raise typer.BadParameter(f"Preset file not found: {preset_file}")
+
+
+def _get_preset_selections(preset_file: Path) -> dict:
+    preset_file = _resolve_preset_file(preset_file)
+    preset = read_analysis_preset(preset_file)
+    asset_type = detect_asset_type(preset.symbol)
+
+    provider_from_env = bool(os.environ.get("TRADINGAGENTS_LLM_PROVIDER"))
+    selected_llm_provider = (
+        preset.llm_provider
+        or (DEFAULT_CONFIG["llm_provider"] if provider_from_env else None)
+        or _preset_provider_from_models(preset.quick_llm, preset.deep_llm)
+        or DEFAULT_CONFIG["llm_provider"]
+    ).lower()
+    backend_url = resolve_backend_url(
+        selected_llm_provider,
+        env_url=preset.backend_url or DEFAULT_CONFIG["backend_url"],
+    )
+
+    if selected_llm_provider == "ollama":
+        confirm_ollama_endpoint(backend_url)
+    elif selected_llm_provider == "openai_compatible" and not backend_url:
+        raise typer.BadParameter(
+            "Preset provider=openai_compatible requires backend_url=..."
+        )
+
+    ensure_api_key(selected_llm_provider)
+
+    console.print(f"[green]✓ Loaded preset:[/green] {preset_file}")
+    console.print(
+        f"[green]✓ Selection:[/green] {preset.symbol} on {preset.analysis_date}, "
+        f"language={preset.output_language}, depth={preset.research_depth}"
+    )
+    console.print(
+        f"[green]✓ Analysts:[/green] {', '.join(analyst.value for analyst in preset.analysts)}"
+    )
+    console.print(
+        f"[green]✓ LLM:[/green] provider={selected_llm_provider}, "
+        f"quick={preset.quick_llm}, deep={preset.deep_llm}"
+    )
+
+    return {
+        "ticker": preset.symbol,
+        "asset_type": asset_type.value,
+        "analysis_date": preset.analysis_date,
+        "analysts": preset.analysts,
+        "research_depth": preset.research_depth,
+        "llm_provider": selected_llm_provider,
+        "backend_url": backend_url,
+        "shallow_thinker": preset.quick_llm,
+        "deep_thinker": preset.deep_llm,
+        "google_thinking_level": DEFAULT_CONFIG["google_thinking_level"],
+        "openai_reasoning_effort": DEFAULT_CONFIG["openai_reasoning_effort"],
+        "anthropic_effort": DEFAULT_CONFIG["anthropic_effort"],
+        "output_language": preset.output_language,
+    }
+
+
+def get_user_selections(preset_file: Path | None = None):
     """Get all user selections before starting the analysis display."""
+    if preset_file is not None:
+        return _get_preset_selections(preset_file)
+
     # Display ASCII art welcome message
     with open(Path(__file__).parent / "static" / "welcome.txt", encoding="utf-8") as f:
         welcome_ascii = f.read()
@@ -988,9 +1081,9 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     return config
 
 
-def run_analysis(checkpoint: bool | None = None):
+def run_analysis(checkpoint: bool | None = None, preset_file: Path | None = None):
     # First get all user selections
-    selections = get_user_selections()
+    selections = get_user_selections(preset_file=preset_file)
 
     config = _build_run_config(selections, checkpoint)
 
@@ -1269,6 +1362,10 @@ def run_analysis(checkpoint: bool | None = None):
 
 @app.command()
 def analyze(
+    preset_file: Path | None = typer.Argument(
+        None,
+        help="Optional key=value preset file (for example MU.txt).",
+    ),
     checkpoint: bool | None = typer.Option(
         None,
         "--checkpoint/--no-checkpoint",
@@ -1285,7 +1382,12 @@ def analyze(
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+    run_analysis(checkpoint=checkpoint, preset_file=preset_file)
+
+
+@app.callback()
+def main():
+    """TradingAgents CLI."""
 
 
 if __name__ == "__main__":

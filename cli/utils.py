@@ -1,4 +1,7 @@
 import os
+from dataclasses import dataclass
+from datetime import date as date_cls
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import questionary
@@ -21,6 +24,60 @@ ANALYST_ORDER = [
 ]
 
 CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
+
+
+@dataclass(frozen=True)
+class AnalysisPreset:
+    symbol: str
+    analysis_date: str
+    output_language: str
+    analysts: list[AnalystType]
+    research_depth: int
+    quick_llm: str
+    deep_llm: str
+    llm_provider: str | None = None
+    backend_url: str | None = None
+
+
+_PRESET_KEY_ALIASES = {
+    "symbol": "symbol",
+    "ticker": "symbol",
+    "date": "date",
+    "lang": "lang",
+    "language": "lang",
+    "output_language": "lang",
+    "analysts": "analysts",
+    "depth": "depth",
+    "quickllm": "quickLLM",
+    "quick_llm": "quickLLM",
+    "quickthinkllm": "quickLLM",
+    "quick_think_llm": "quickLLM",
+    "deepllm": "deepLLM",
+    "deep_llm": "deepLLM",
+    "deepthinkllm": "deepLLM",
+    "deep_think_llm": "deepLLM",
+    "provider": "provider",
+    "llm_provider": "provider",
+    "backendurl": "backend_url",
+    "backend_url": "backend_url",
+}
+
+_DEPTH_VALUES = {
+    "shallow": 1,
+    "quick": 1,
+    "medium": 3,
+    "deep": 5,
+}
+
+_ANALYST_ALIASES = {
+    "market": AnalystType.MARKET,
+    "technical": AnalystType.MARKET,
+    "social": AnalystType.SOCIAL,
+    "sentiment": AnalystType.SOCIAL,
+    "news": AnalystType.NEWS,
+    "fundamental": AnalystType.FUNDAMENTALS,
+    "fundamentals": AnalystType.FUNDAMENTALS,
+}
 
 
 def is_valid_ticker_input(value: str) -> bool:
@@ -76,6 +133,129 @@ def normalize_ticker_symbol(ticker: str) -> str:
         return normalize_symbol(ticker)
     except Exception:
         return ticker.strip().upper()
+
+
+def _parse_preset_date(value: str, today: date_cls | None = None) -> str:
+    raw = value.strip()
+    current = today or date_cls.today()
+    if raw in {"0", "+0"}:
+        return current.isoformat()
+    try:
+        offset = int(raw)
+    except ValueError:
+        offset = None
+    if offset is not None:
+        parsed = current + timedelta(days=offset)
+        if parsed > current:
+            raise ValueError("Analysis date cannot be in the future.")
+        return parsed.isoformat()
+
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            parsed = datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+        if parsed > current:
+            raise ValueError("Analysis date cannot be in the future.")
+        return parsed.isoformat()
+    raise ValueError(
+        f"Invalid date {value!r}; use 0, -1, YYYY-MM-DD, or MM/DD/YYYY."
+    )
+
+
+def _parse_preset_depth(value: str) -> int:
+    raw = value.strip()
+    lowered = raw.lower()
+    if lowered in _DEPTH_VALUES:
+        return _DEPTH_VALUES[lowered]
+    try:
+        depth = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "Invalid depth; use Shallow, Medium, Deep, or a round count."
+        ) from exc
+    if depth < 1:
+        raise ValueError("Invalid depth; round count must be at least 1.")
+    return depth
+
+
+def _parse_preset_analysts(value: str, asset_type: AssetType) -> list[AnalystType]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("analysts must not be empty.")
+
+    available = filter_analysts_for_asset_type(
+        [analyst for _, analyst in ANALYST_ORDER],
+        asset_type,
+    )
+    if raw.lower() == "all":
+        return available
+
+    selected: list[AnalystType] = []
+    for item in raw.replace(";", ",").split(","):
+        key = item.strip().lower()
+        if not key:
+            continue
+        analyst = _ANALYST_ALIASES.get(key)
+        if analyst is None:
+            raise ValueError(
+                f"Unknown analyst {item!r}; use all, market, social, news, fundamentals."
+            )
+        if analyst not in available:
+            continue
+        if analyst not in selected:
+            selected.append(analyst)
+
+    if not selected:
+        raise ValueError("Preset selects no analysts for this asset type.")
+    return selected
+
+
+def read_analysis_preset(path: Path, today: date_cls | None = None) -> AnalysisPreset:
+    """Read a compact key=value analysis preset.
+
+    Supported fields:
+      symbol, date, lang, analysts, depth, quickLLM, deepLLM
+    Optional fields:
+      provider, backend_url
+    """
+    values: dict[str, str] = {}
+    for lineno, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            raise ValueError(f"{path}:{lineno}: expected key=value.")
+        key, raw_value = stripped.split("=", 1)
+        canonical = _PRESET_KEY_ALIASES.get(key.strip().lower())
+        if canonical is None:
+            raise ValueError(f"{path}:{lineno}: unknown preset key {key.strip()!r}.")
+        value = raw_value.strip()
+        if not value:
+            raise ValueError(f"{path}:{lineno}: {key.strip()} must not be empty.")
+        values[canonical] = value
+
+    required = ("symbol", "date", "lang", "analysts", "depth", "quickLLM", "deepLLM")
+    missing = [key for key in required if key not in values]
+    if missing:
+        raise ValueError(f"{path}: missing required key(s): {', '.join(missing)}.")
+
+    symbol = normalize_ticker_symbol(values["symbol"])
+    asset_type = detect_asset_type(symbol)
+    return AnalysisPreset(
+        symbol=symbol,
+        analysis_date=_parse_preset_date(values["date"], today=today),
+        output_language=values["lang"],
+        analysts=_parse_preset_analysts(values["analysts"], asset_type),
+        research_depth=_parse_preset_depth(values["depth"]),
+        quick_llm=values["quickLLM"],
+        deep_llm=values["deepLLM"],
+        llm_provider=values.get("provider"),
+        backend_url=values.get("backend_url"),
+    )
 
 
 def detect_asset_type(ticker: str) -> AssetType:

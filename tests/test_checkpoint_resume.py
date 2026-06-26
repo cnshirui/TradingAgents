@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 
 from tradingagents.graph.checkpointer import (
     checkpoint_step,
+    checkpoint_step_from_saver,
     clear_checkpoint,
     get_checkpointer,
     has_checkpoint,
@@ -75,6 +76,34 @@ class TestCheckpointResume(unittest.TestCase):
 
         # analyst added 1, trader added 10 → 11
         self.assertEqual(result["count"], 11)
+
+    def test_checkpointer_uses_wal_and_busy_timeout(self):
+        """Checkpoint DB connections should wait for locks instead of failing fast."""
+        with get_checkpointer(self.tmpdir, self.ticker) as saver:
+            with saver.cursor(transaction=False) as cur:
+                busy_timeout = cur.execute("PRAGMA busy_timeout").fetchone()[0]
+                journal_mode = cur.execute("PRAGMA journal_mode").fetchone()[0]
+
+        self.assertEqual(busy_timeout, 60000)
+        self.assertEqual(journal_mode.lower(), "wal")
+
+    def test_checkpoint_step_from_open_saver(self):
+        """Resume logging can inspect the active saver without a second connection."""
+        global _should_crash
+        builder = _build_graph()
+        tid = thread_id(self.ticker, self.date)
+        cfg = {"configurable": {"thread_id": tid}}
+
+        _should_crash = True
+        with get_checkpointer(self.tmpdir, self.ticker) as saver:
+            graph = builder.compile(checkpointer=saver)
+            with self.assertRaises(RuntimeError):
+                graph.invoke({"count": 0}, config=cfg)
+
+            self.assertEqual(
+                checkpoint_step_from_saver(saver, self.ticker, self.date),
+                1,
+            )
 
     def test_clear_checkpoint_allows_fresh_start(self):
         """After clearing, the graph starts from scratch."""

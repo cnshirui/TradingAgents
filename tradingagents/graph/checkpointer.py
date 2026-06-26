@@ -15,6 +15,9 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tradingagents.dataflows.utils import safe_ticker_component
 
+_CHECKPOINT_TIMEOUT_SECONDS = 60.0
+_CHECKPOINT_BUSY_TIMEOUT_MS = int(_CHECKPOINT_TIMEOUT_SECONDS * 1000)
+
 
 def _db_path(data_dir: str | Path, ticker: str) -> Path:
     """Return the SQLite checkpoint DB path for a ticker."""
@@ -23,6 +26,19 @@ def _db_path(data_dir: str | Path, ticker: str) -> Path:
     p = Path(data_dir) / "checkpoints"
     p.mkdir(parents=True, exist_ok=True)
     return p / f"{safe}.db"
+
+
+def _connect_checkpoint_db(db: Path) -> sqlite3.Connection:
+    """Open a SQLite checkpoint connection tuned for LangGraph concurrency."""
+    conn = sqlite3.connect(
+        str(db),
+        timeout=_CHECKPOINT_TIMEOUT_SECONDS,
+        check_same_thread=False,
+    )
+    conn.execute(f"PRAGMA busy_timeout = {_CHECKPOINT_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
 
 
 def thread_id(ticker: str, date: str) -> str:
@@ -34,7 +50,7 @@ def thread_id(ticker: str, date: str) -> str:
 def get_checkpointer(data_dir: str | Path, ticker: str) -> Generator[SqliteSaver, None, None]:
     """Context manager yielding a SqliteSaver backed by a per-ticker DB."""
     db = _db_path(data_dir, ticker)
-    conn = sqlite3.connect(str(db), check_same_thread=False)
+    conn = _connect_checkpoint_db(db)
     try:
         saver = SqliteSaver(conn)
         saver.setup()
@@ -53,13 +69,18 @@ def checkpoint_step(data_dir: str | Path, ticker: str, date: str) -> int | None:
     db = _db_path(data_dir, ticker)
     if not db.exists():
         return None
-    tid = thread_id(ticker, date)
     with get_checkpointer(data_dir, ticker) as saver:
-        config = {"configurable": {"thread_id": tid}}
-        cp = saver.get_tuple(config)
-        if cp is None:
-            return None
-        return cp.metadata.get("step")
+        return checkpoint_step_from_saver(saver, ticker, date)
+
+
+def checkpoint_step_from_saver(saver: SqliteSaver, ticker: str, date: str) -> int | None:
+    """Return the latest checkpoint step using an already-open saver."""
+    tid = thread_id(ticker, date)
+    config = {"configurable": {"thread_id": tid}}
+    cp = saver.get_tuple(config)
+    if cp is None:
+        return None
+    return cp.metadata.get("step")
 
 
 def clear_all_checkpoints(data_dir: str | Path) -> int:
@@ -70,6 +91,10 @@ def clear_all_checkpoints(data_dir: str | Path) -> int:
     dbs = list(cp_dir.glob("*.db"))
     for db in dbs:
         db.unlink()
+        for suffix in ("-wal", "-shm"):
+            sidecar = db.with_name(f"{db.name}{suffix}")
+            if sidecar.exists():
+                sidecar.unlink()
     return len(dbs)
 
 
@@ -79,7 +104,7 @@ def clear_checkpoint(data_dir: str | Path, ticker: str, date: str) -> None:
     if not db.exists():
         return
     tid = thread_id(ticker, date)
-    conn = sqlite3.connect(str(db))
+    conn = _connect_checkpoint_db(db)
     try:
         for table in ("writes", "checkpoints"):
             conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (tid,))

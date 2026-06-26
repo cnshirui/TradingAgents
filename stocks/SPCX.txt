@@ -1,0 +1,8 @@
+symbol=SPCX
+date=0
+lang=Chinese
+analysts=all
+depth=Deep
+quickLLM=qwen2.5:7b
+deepLLM=deepseek-r1:14b
+
