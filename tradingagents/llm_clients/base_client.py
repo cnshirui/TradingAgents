@@ -3,6 +3,10 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 
+class LLMProviderError(RuntimeError):
+    """Raised when an LLM provider rejects a request in an actionable way."""
+
+
 def normalize_content(response):
     """Normalize LLM response content to a plain string.
 

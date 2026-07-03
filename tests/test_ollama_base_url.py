@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import importlib
 
+import httpx
+from openai import NotFoundError as OpenAINotFoundError
 import pytest
+
+from tradingagents.llm_clients.base_client import LLMProviderError
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -186,3 +190,31 @@ def test_ollama_offers_custom_model_id():
         assert "custom" in values, f"Ollama {mode!r} missing 'custom' option: {entries}"
         # Custom option is last so it doesn't push the curated defaults off-screen
         assert values[-1] == "custom", f"'custom' should be last entry: {values}"
+
+
+def test_ollama_missing_model_error_is_actionable(monkeypatch):
+    """Translate Ollama's raw 404 into a model-pull/provider hint."""
+    mod = _reload_client()
+    llm = mod.OpenAIClient(model="gemini-3.5-flash", provider="ollama").get_llm()
+    response = httpx.Response(
+        404,
+        request=httpx.Request("POST", "http://localhost:11434/v1/chat/completions"),
+    )
+    error = OpenAINotFoundError(
+        "Error code: 404",
+        response=response,
+        body={"error": {"message": "model 'gemini-3.5-flash' not found"}},
+    )
+
+    def _raise_missing_model(self, *args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(mod.NormalizedChatOpenAI, "invoke", _raise_missing_model)
+
+    with pytest.raises(LLMProviderError) as caught:
+        llm.invoke([])
+
+    message = str(caught.value)
+    assert "Ollama could not find the selected model 'gemini-3.5-flash'" in message
+    assert "ollama pull gemini-3.5-flash" in message
+    assert "TRADINGAGENTS_LLM_PROVIDER" in message

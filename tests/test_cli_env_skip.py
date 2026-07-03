@@ -81,6 +81,41 @@ class TestCliSkipsPromptsFromEnv(unittest.TestCase):
         self.assertEqual(sel["deep_thinker"], "kimi-k2.5")
         self.assertEqual(sel["output_language"], "Japanese")
 
+    def test_gemini_models_switch_env_ollama_to_google(self):
+        import cli.main as m
+
+        env = {
+            "TRADINGAGENTS_LLM_PROVIDER": "ollama",
+            "TRADINGAGENTS_QUICK_THINK_LLM": "gemini-3.5-flash",
+            "TRADINGAGENTS_DEEP_THINK_LLM": "gemini-3.1-pro-preview",
+            "TRADINGAGENTS_OUTPUT_LANGUAGE": "Chinese",
+        }
+        fake_cfg = dict(m.DEFAULT_CONFIG)
+        fake_cfg.update({
+            "llm_provider": "ollama",
+            "backend_url": None,
+            "quick_think_llm": "gemini-3.5-flash",
+            "deep_think_llm": "gemini-3.1-pro-preview",
+            "output_language": "Chinese",
+        })
+
+        with mock.patch.dict(os.environ, env, clear=False), \
+             mock.patch.object(m, "DEFAULT_CONFIG", fake_cfg), \
+             mock.patch.object(m, "fetch_announcements", return_value=None), \
+             mock.patch.object(m, "display_announcements"), \
+             mock.patch.object(m, "get_ticker", return_value="MU"), \
+             mock.patch.object(m, "get_analysis_date", return_value="2026-07-03"), \
+             mock.patch.object(m, "select_analysts", return_value=[]), \
+             mock.patch.object(m, "select_research_depth", return_value=5), \
+             mock.patch.object(m, "ensure_api_key") as ensure_key:
+            sel = m.get_user_selections()
+
+        self.assertEqual(sel["llm_provider"], "google")
+        self.assertIsNone(sel["backend_url"])
+        self.assertEqual(sel["shallow_thinker"], "gemini-3.5-flash")
+        self.assertEqual(sel["deep_thinker"], "gemini-3.1-pro-preview")
+        self.assertEqual([call.args[0] for call in ensure_key.call_args_list], ["ollama", "google"])
+
 
 @pytest.mark.unit
 class TestResearchDepthSkippedFromEnv(unittest.TestCase):

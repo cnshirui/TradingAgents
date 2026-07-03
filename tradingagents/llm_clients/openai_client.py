@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from openai import NotFoundError as OpenAINotFoundError
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 
 from .api_key_env import get_api_key_env
-from .base_client import BaseLLMClient, normalize_content
+from .base_client import BaseLLMClient, LLMProviderError, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
 
@@ -66,6 +67,39 @@ class LocalCompatibleChatOpenAI(NormalizedChatOpenAI):
         if resolved == "function_calling":
             kwargs.setdefault("tool_choice", None)
         return super().with_structured_output(schema, method=method, **kwargs)
+
+
+def _provider_error_message(exc: Exception) -> str:
+    """Extract the provider's human-facing message from OpenAI SDK errors."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if body.get("message"):
+            return str(body["message"])
+    return str(exc)
+
+
+class OllamaChatOpenAI(NormalizedChatOpenAI):
+    """Ollama client with clearer errors for missing local models."""
+
+    def invoke(self, input, config=None, **kwargs):
+        try:
+            return super().invoke(input, config, **kwargs)
+        except OpenAINotFoundError as exc:
+            message = _provider_error_message(exc)
+            if "model" in message.lower() and "not found" in message.lower():
+                base_url = str(getattr(self, "openai_api_base", "") or "")
+                raise LLMProviderError(
+                    "Ollama could not find the selected model "
+                    f"'{self.model_name}' at {base_url}. Pull the model with "
+                    f"`ollama pull {self.model_name}`, choose one from "
+                    "`ollama list`, or switch TRADINGAGENTS_LLM_PROVIDER to "
+                    "the provider that serves this model. Provider said: "
+                    f"{message}"
+                ) from exc
+            raise
 
 
 def _input_to_messages(input_: Any) -> list:
@@ -225,7 +259,8 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "groq":       ProviderSpec(base_url="https://api.groq.com/openai/v1"),
     "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1"),
     "ollama":     ProviderSpec(base_url="http://localhost:11434/v1", base_url_env="OLLAMA_BASE_URL",
-                               key_optional=True, placeholder_key="ollama"),
+                               key_optional=True, placeholder_key="ollama",
+                               chat_class=OllamaChatOpenAI),
     # Generic endpoint: user supplies base_url; key optional (keyless local).
     "openai_compatible": ProviderSpec(
         require_base_url=True, key_optional=True, chat_class=LocalCompatibleChatOpenAI

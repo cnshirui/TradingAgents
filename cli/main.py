@@ -5,7 +5,6 @@ from collections import deque
 from functools import wraps
 from pathlib import Path
 
-import click
 import typer
 from rich import box
 from rich.align import Align
@@ -18,7 +17,6 @@ from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
-from typer.core import TyperGroup
 
 from cli.announcements import display_announcements, fetch_announcements
 from cli.stats_handler import StatsCallbackHandler
@@ -43,6 +41,7 @@ from cli.utils import (
     select_research_depth,
     select_shallow_thinking_agent,
 )
+from tradingagents.llm_clients.base_client import LLMProviderError
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.analyst_execution import (
     AnalystWallTimeTracker,
@@ -56,21 +55,8 @@ from tradingagents.reporting import write_report_tree
 console = Console()
 
 
-class PresetShortcutGroup(TyperGroup):
-    """Allow `tradingagents MU.txt` as shorthand for `tradingagents analyze MU.txt`."""
-
-    def resolve_command(self, ctx, args):
-        try:
-            return super().resolve_command(ctx, args)
-        except click.UsageError:
-            if args and Path(args[0]).suffix.lower() == ".txt":
-                return super().resolve_command(ctx, ["analyze", *args])
-            raise
-
-
 app = typer.Typer(
     name="TradingAgents",
-    cls=PresetShortcutGroup,
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
 )
@@ -496,12 +482,38 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
 
 
-def _preset_provider_from_models(quick_llm: str, deep_llm: str) -> str | None:
-    """Infer Ollama for common local model IDs like qwen2.5:7b."""
+def _is_gemini_model(model_id: str) -> bool:
+    return model_id.strip().lower().startswith("gemini-")
+
+
+def _provider_from_models(quick_llm: str, deep_llm: str) -> str | None:
+    """Infer provider from model IDs when the user did not set one directly."""
     model_ids = (quick_llm, deep_llm)
+    if all(_is_gemini_model(model_id) for model_id in model_ids):
+        return "google"
     if any(":" in model_id and "/" not in model_id for model_id in model_ids):
         return "ollama"
     return None
+
+
+def _maybe_switch_provider_for_gemini_models(
+    selected_llm_provider: str,
+    backend_url: str | None,
+    quick_llm: str,
+    deep_llm: str,
+) -> tuple[str, str | None]:
+    """Use Google's native Gemini API when both selected models are Gemini IDs."""
+    if selected_llm_provider.lower() == "google":
+        return selected_llm_provider.lower(), backend_url
+
+    if not all(_is_gemini_model(model_id) for model_id in (quick_llm, deep_llm)):
+        return selected_llm_provider.lower(), backend_url
+
+    console.print(
+        "[yellow]Gemini model IDs selected; using Google Gemini API instead "
+        f"of provider '{selected_llm_provider}'.[/yellow]"
+    )
+    return "google", resolve_backend_url("google")
 
 
 def _resolve_preset_file(preset_file: Path) -> Path:
@@ -522,12 +534,15 @@ def _get_preset_selections(preset_file: Path) -> dict:
     selected_llm_provider = (
         preset.llm_provider
         or (DEFAULT_CONFIG["llm_provider"] if provider_from_env else None)
-        or _preset_provider_from_models(preset.quick_llm, preset.deep_llm)
+        or _provider_from_models(preset.quick_llm, preset.deep_llm)
         or DEFAULT_CONFIG["llm_provider"]
     ).lower()
     backend_url = resolve_backend_url(
         selected_llm_provider,
         env_url=preset.backend_url or DEFAULT_CONFIG["backend_url"],
+    )
+    selected_llm_provider, backend_url = _maybe_switch_provider_for_gemini_models(
+        selected_llm_provider, backend_url, preset.quick_llm, preset.deep_llm
     )
 
     if selected_llm_provider == "ollama":
@@ -770,6 +785,16 @@ def get_user_selections(preset_file: Path | None = None):
         )
         selected_shallow_thinker = select_shallow_thinking_agent(selected_llm_provider)
         selected_deep_thinker = select_deep_thinking_agent(selected_llm_provider)
+
+    original_llm_provider = selected_llm_provider
+    selected_llm_provider, backend_url = _maybe_switch_provider_for_gemini_models(
+        selected_llm_provider,
+        backend_url,
+        selected_shallow_thinker,
+        selected_deep_thinker,
+    )
+    if selected_llm_provider != original_llm_provider.lower():
+        ensure_api_key(selected_llm_provider)
 
     # Step 8: Provider-specific reasoning/thinking configuration. Each knob is
     # settable via its TRADINGAGENTS_* env var; when that var is set (or the
@@ -1081,6 +1106,21 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     return config
 
 
+def _default_report_path(ticker: str) -> Path:
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path.cwd() / "reports" / f"{ticker}_{timestamp}"
+
+
+def _save_report_with_default_path(final_state, ticker: str) -> None:
+    save_path = _default_report_path(ticker)
+    try:
+        report_file = save_report_to_disk(final_state, ticker, save_path)
+        console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
+        console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+    except Exception as e:
+        console.print(f"[red]Error saving report: {e}[/red]")
+
+
 def run_analysis(checkpoint: bool | None = None, preset_file: Path | None = None):
     # First get all user selections
     selections = get_user_selections(preset_file=preset_file)
@@ -1337,11 +1377,14 @@ def run_analysis(checkpoint: bool | None = None, preset_file: Path | None = None
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
     console.print(f"[dim]{analyst_wall_time_tracker.format_summary()}[/dim]")
 
+    if preset_file is not None:
+        _save_report_with_default_path(final_state, selections["ticker"])
+        return
+
     # Prompt to save report
     save_choice = typer.prompt("Save report?", default="Y").strip().upper()
     if save_choice in ("Y", "YES", ""):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
+        default_path = _default_report_path(selections["ticker"])
         save_path_str = typer.prompt(
             "Save path (press Enter for default)",
             default=str(default_path)
@@ -1382,12 +1425,11 @@ def analyze(
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint, preset_file=preset_file)
-
-
-@app.callback()
-def main():
-    """TradingAgents CLI."""
+    try:
+        run_analysis(checkpoint=checkpoint, preset_file=preset_file)
+    except LLMProviderError as exc:
+        console.print(f"\n[red]LLM provider error:[/red] {exc}")
+        raise typer.Exit(code=1) from None
 
 
 if __name__ == "__main__":
