@@ -50,7 +50,7 @@ from tradingagents.graph.analyst_execution import (
     sync_analyst_tracker_from_chunk,
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.reporting import write_report_tree
+from tradingagents.reporting import normalize_markdown_text, write_report_tree
 
 console = Console()
 
@@ -1189,7 +1189,7 @@ def run_analysis(checkpoint: bool | None = None, preset_file: Path | None = None
                 content = obj.report_sections[section_name]
                 if content:
                     file_name = f"{section_name}.md"
-                    text = "\n".join(str(item) for item in content) if isinstance(content, list) else content
+                    text = normalize_markdown_text(content)
                     with open(report_dir / file_name, "w", encoding="utf-8") as f:
                         f.write(text)
         return wrapper

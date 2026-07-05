@@ -1,0 +1,8 @@
+symbol=MUU
+date=0
+lang=Chinese
+analysts=all
+depth=Deep
+provider=google
+quickLLM=gemini-3.5-flash
+deepLLM=gemini-3.1-pro-preview
