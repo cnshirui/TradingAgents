@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import importlib
+import re
 
 import httpx
 from openai import NotFoundError as OpenAINotFoundError
 import pytest
 
 from tradingagents.llm_clients.base_client import LLMProviderError
+
+# Rich colorizes console output and highlights numbers and URLs, which splits
+# asserted substrings with escape codes ("port \x1b[1;33m11434"). Whether it
+# does so depends on the ambient terminal, so strip the codes to keep these
+# assertions independent of where the suite runs.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _console_out(capsys) -> str:
+    return _ANSI.sub("", capsys.readouterr().out)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -126,7 +137,7 @@ def test_confirm_endpoint_shows_default(monkeypatch, capsys):
     import cli.utils as cli_utils
     importlib.reload(cli_utils)
     cli_utils.confirm_ollama_endpoint("http://localhost:11434/v1")
-    out = capsys.readouterr().out
+    out = _console_out(capsys)
     assert "http://localhost:11434/v1" in out
     assert "OLLAMA_BASE_URL" not in out  # not from env
     assert "Note" not in out  # no warnings for the canonical default
@@ -137,7 +148,7 @@ def test_confirm_endpoint_marks_env_origin(monkeypatch, capsys):
     import cli.utils as cli_utils
     importlib.reload(cli_utils)
     cli_utils.confirm_ollama_endpoint("http://remote-host:11434/v1")
-    out = capsys.readouterr().out
+    out = _console_out(capsys)
     assert "http://remote-host:11434/v1" in out
     assert "OLLAMA_BASE_URL" in out
 
@@ -148,7 +159,7 @@ def test_confirm_endpoint_warns_on_missing_scheme(monkeypatch, capsys):
     import cli.utils as cli_utils
     importlib.reload(cli_utils)
     cli_utils.confirm_ollama_endpoint("0.0.0.128")
-    out = capsys.readouterr().out
+    out = _console_out(capsys)
     assert "missing a scheme" in out
     assert "http://<host>:11434/v1" in out
 
@@ -159,7 +170,7 @@ def test_confirm_endpoint_warns_on_non_default_port_remote(monkeypatch, capsys):
     import cli.utils as cli_utils
     importlib.reload(cli_utils)
     cli_utils.confirm_ollama_endpoint("http://remote-host/v1")
-    out = capsys.readouterr().out
+    out = _console_out(capsys)
     assert "port 11434" in out
 
 
@@ -169,7 +180,7 @@ def test_confirm_endpoint_quiet_on_local_no_port(monkeypatch, capsys):
     import cli.utils as cli_utils
     importlib.reload(cli_utils)
     cli_utils.confirm_ollama_endpoint("http://localhost/v1")
-    out = capsys.readouterr().out
+    out = _console_out(capsys)
     assert "Note" not in out  # localhost is fine without explicit port
 
 
@@ -218,3 +229,28 @@ def test_ollama_missing_model_error_is_actionable(monkeypatch):
     assert "Ollama could not find the selected model 'gemini-3.5-flash'" in message
     assert "ollama pull gemini-3.5-flash" in message
     assert "TRADINGAGENTS_LLM_PROVIDER" in message
+
+
+@pytest.mark.unit
+def test_structured_output_suppresses_object_tool_choice(monkeypatch):
+    """Ollama rejects the object-form tool_choice like other local servers
+    (#1062), and a local model ID has no capability entry saying otherwise, so
+    it takes the same client as the generic local endpoint."""
+    from langchain_openai import ChatOpenAI
+    from pydantic import BaseModel
+
+    from tradingagents.llm_clients import create_llm_client
+
+    class Schema(BaseModel):
+        x: int
+
+    captured = {}
+    monkeypatch.setattr(
+        ChatOpenAI,
+        "with_structured_output",
+        lambda self, schema, method=None, **kw: captured.update({"method": method, **kw}) or "BOUND",
+    )
+
+    create_llm_client(provider="ollama", model="qwen3:30b").get_llm().with_structured_output(Schema)
+
+    assert captured["tool_choice"] is None

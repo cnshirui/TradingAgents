@@ -81,8 +81,9 @@ def _provider_error_message(exc: Exception) -> str:
     return str(exc)
 
 
-class OllamaChatOpenAI(NormalizedChatOpenAI):
-    """Ollama client with clearer errors for missing local models."""
+class OllamaChatOpenAI(LocalCompatibleChatOpenAI):
+    """Ollama client: the local-server structured-output handling (#1062) plus
+    clearer errors for missing local models."""
 
     def invoke(self, input, config=None, **kwargs):
         try:
@@ -198,15 +199,15 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
 
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
-    "timeout", "max_retries", "reasoning_effort", "temperature",
+    "timeout", "max_retries", "reasoning_effort", "temperature", "max_tokens",
     "api_key", "callbacks", "http_client", "http_async_client",
 )
 
-# OpenAI's ``reasoning_effort`` is only accepted by reasoning models — the GPT-5
-# family and the o-series. Non-reasoning models (gpt-4.1, gpt-4o, ...) 400 with
+# OpenAI's ``reasoning_effort`` is only accepted by reasoning models — GPT-5 and
+# later, and the o-series. Non-reasoning models (gpt-4.1, gpt-4o, ...) 400 with
 # "Unsupported parameter: 'reasoning.effort' is not supported with this model".
 # Drop the kwarg for those rather than crash the run.
-_OPENAI_REASONING_MODEL = re.compile(r"^(gpt-5|o[1-9])")
+_OPENAI_REASONING_MODEL = re.compile(r"^(?:gpt-(?:[5-9]|[1-9]\d)|o[1-9])(?:[.-]|$)")
 
 
 def _supports_reasoning_effort(model: str) -> bool:

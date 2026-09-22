@@ -10,6 +10,8 @@ differ from the broker / TradingView / MT5 style symbols users often type:
     EURUSD            EURUSD=X          spot forex pairs take a ``=X`` suffix
     BTCUSD            BTC-USD           crypto pairs use a ``-`` separator
     SPX500, US500     ^GSPC             index CFDs map to Yahoo index symbols
+    09992.HK, 700.HK  9992.HK, 0700.HK  HK codes are zero-padded to 4 digits
+    600519.SH         600519.SS         Yahoo spells Shanghai ``.SS``
 
 Passing the raw broker symbol to Yahoo returns an empty result, which the
 agents previously received as free text and could hallucinate a price
@@ -72,6 +74,10 @@ _ALIASES = {
 # Yahoo symbols may contain letters, digits, and these structural characters.
 _YAHOO_SAFE = re.compile(r"^[A-Za-z0-9._\-\^=]+$")
 
+# HKEX codes as Yahoo spells them: the number zero-padded to 4 digits (#957).
+_HK_CODE = re.compile(r"^(\d{1,5})\.HK$")
+_SHANGHAI_SH = re.compile(r"^(\d{6})\.SH$")
+
 
 # Crypto quote currencies that all map to Yahoo's USD pair. Yahoo lists only
 # ``<BASE>-USD`` (not the USDT/USDC stablecoin pairs), so a broker symbol quoted
@@ -80,20 +86,25 @@ _YAHOO_SAFE = re.compile(r"^[A-Za-z0-9._\-\^=]+$")
 _CRYPTO_QUOTES = ("USDT", "USDC", "USD")
 
 
-def _normalize_crypto(s: str) -> str | None:
-    """Return ``<BASE>-USD`` if ``s`` is a known crypto quoted in USD/USDT/USDC.
-
-    Accepts dashed or undashed forms: ``BTCUSD``, ``BTCUSDT``, ``BTC-USDT``,
-    ``BTC-USDC`` all resolve to ``BTC-USD``. Returns None otherwise.
+def crypto_base(raw: str) -> str | None:
+    """Return the crypto base (e.g. ``BTC``) for a known USD/USDT/USDC-quoted
+    crypto symbol in any form the pipeline may hold — ``BTC-USD``, ``BTCUSD``,
+    ``BTC-USDT`` — or None for non-crypto symbols. Purely syntactic.
     """
-    compact = s.replace("-", "")
+    if not isinstance(raw, str):
+        return None
+    compact = raw.strip().upper().rstrip("+").replace("-", "")
     for quote in _CRYPTO_QUOTES:
         if compact.endswith(quote):
             base = compact[: -len(quote)]
-            if base in _CRYPTO_BASES:
-                return f"{base}-USD"
-            break
+            return base if base in _CRYPTO_BASES else None
     return None
+
+
+def _normalize_crypto(s: str) -> str | None:
+    """Return ``<BASE>-USD`` for a known USD/USDT/USDC-quoted crypto, else None."""
+    base = crypto_base(s)
+    return f"{base}-USD" if base else None
 
 
 def normalize_symbol(raw: str) -> str:
@@ -104,7 +115,10 @@ def normalize_symbol(raw: str) -> str:
       2. Crypto rule: a known crypto base quoted in USD/USDT/USDC (dashed or
          not) -> ``BASE-USD``.
       3. Forex rule: six letters that are two ISO currency codes -> ``PAIR=X``.
-      4. Otherwise the upper-cased symbol is returned unchanged (plain
+      4. HK rule: a numeric ``.HK`` code -> Yahoo's 4-digit padding
+         (``09992.HK`` -> ``9992.HK``, ``700.HK`` -> ``0700.HK``).
+      5. Shanghai rule: ``600519.SH`` -> ``600519.SS``.
+      6. Otherwise the upper-cased symbol is returned unchanged (plain
          equities, ETFs, Yahoo-native symbols like ``GC=F`` or ``^GSPC``).
 
     A trailing ``+`` (broker CFD marker, e.g. ``XAUUSD+``) is stripped before
@@ -125,6 +139,10 @@ def normalize_symbol(raw: str) -> str:
         canonical = crypto
     elif len(s) == 6 and s[:3] in _FOREX_CURRENCIES and s[3:] in _FOREX_CURRENCIES:
         canonical = f"{s}=X"
+    elif hk := _HK_CODE.match(s):
+        canonical = f"{int(hk.group(1)):04d}.HK"
+    elif sh := _SHANGHAI_SH.match(s):
+        canonical = f"{sh.group(1)}.SS"
     else:
         canonical = s
 

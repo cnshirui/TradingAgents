@@ -6,6 +6,7 @@ import pytest
 
 from tradingagents.dataflows.symbol_utils import (
     NoMarketDataError,
+    crypto_base,
     is_yahoo_safe,
     normalize_symbol,
 )
@@ -51,6 +52,27 @@ class TestNormalizeSymbol(unittest.TestCase):
     def test_empty_input_passthrough(self):
         self.assertEqual(normalize_symbol(""), "")
 
+    def test_hk_five_digit_code_repadded_to_four(self):
+        # HKEX lists up to 5-digit codes; Yahoo only accepts 4 (#957).
+        self.assertEqual(normalize_symbol("09992.HK"), "9992.HK")
+        self.assertEqual(normalize_symbol("00700.HK"), "0700.HK")
+        self.assertEqual(normalize_symbol("00001.HK"), "0001.HK")
+
+    def test_hk_four_digit_code_unchanged(self):
+        self.assertEqual(normalize_symbol("0700.HK"), "0700.HK")
+        self.assertEqual(normalize_symbol("9992.HK"), "9992.HK")
+        self.assertEqual(normalize_symbol("80737.HK"), "80737.HK")
+
+    def test_hk_short_code_padded_to_four(self):
+        self.assertEqual(normalize_symbol("700.HK"), "0700.HK")
+
+    def test_hk_code_case_insensitive_suffix(self):
+        self.assertEqual(normalize_symbol("09992.hk"), "9992.HK")
+
+    def test_shanghai_sh_suffix_maps_to_yahoo_ss(self):
+        self.assertEqual(normalize_symbol("600519.sh"), "600519.SS")
+        self.assertEqual(normalize_symbol("600519.SS"), "600519.SS")
+
 
 @pytest.mark.unit
 class TestNoMarketDataError(unittest.TestCase):
@@ -75,6 +97,26 @@ class TestIsYahooSafe(unittest.TestCase):
     def test_rejects_slash_and_space(self):
         for sym in ("a/b", "AA PL", ""):
             self.assertFalse(is_yahoo_safe(sym))
+
+
+@pytest.mark.unit
+class TestCryptoBase(unittest.TestCase):
+    def test_resolves_known_crypto_forms(self):
+        for raw in ("BTC-USD", "BTCUSD", "btc-usdt", "BTC-USDC", "BTCUSD+"):
+            self.assertEqual(crypto_base(raw), "BTC")
+        self.assertEqual(crypto_base("ETH-USD"), "ETH")
+        self.assertEqual(crypto_base("sol-usd"), "SOL")
+
+    def test_non_crypto_returns_none(self):
+        # Plain equities, class shares, and real tickers that alias elsewhere
+        # (GOLD -> gold future on the Yahoo path) must NOT read as crypto.
+        for raw in ("AAPL", "BRK-B", "GOLD", "XYZ-USD", "EURUSD", "", None):
+            self.assertIsNone(crypto_base(raw))
+
+    def test_agrees_with_normalize_symbol(self):
+        # crypto_base is the shared primitive behind the -USD normalization.
+        self.assertEqual(normalize_symbol("BTCUSD"), "BTC-USD")
+        self.assertEqual(crypto_base("BTCUSD"), "BTC")
 
 
 if __name__ == "__main__":

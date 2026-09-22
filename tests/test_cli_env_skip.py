@@ -77,8 +77,8 @@ class TestCliSkipsPromptsFromEnv(unittest.TestCase):
         # The env values flow into the returned selections.
         self.assertEqual(sel["llm_provider"], "openai")
         self.assertEqual(sel["backend_url"], "https://opencode.ai/zen/go/v1")
-        self.assertEqual(sel["shallow_thinker"], "deepseek-v4-pro")
-        self.assertEqual(sel["deep_thinker"], "kimi-k2.5")
+        self.assertEqual(sel["quick_think_llm"], "deepseek-v4-pro")
+        self.assertEqual(sel["deep_think_llm"], "kimi-k2.5")
         self.assertEqual(sel["output_language"], "Japanese")
 
     def test_gemini_models_switch_env_ollama_to_google(self):
@@ -112,8 +112,8 @@ class TestCliSkipsPromptsFromEnv(unittest.TestCase):
 
         self.assertEqual(sel["llm_provider"], "google")
         self.assertIsNone(sel["backend_url"])
-        self.assertEqual(sel["shallow_thinker"], "gemini-3.5-flash")
-        self.assertEqual(sel["deep_thinker"], "gemini-3.1-pro-preview")
+        self.assertEqual(sel["quick_think_llm"], "gemini-3.5-flash")
+        self.assertEqual(sel["deep_think_llm"], "gemini-3.1-pro-preview")
         self.assertEqual([call.args[0] for call in ensure_key.call_args_list], ["ollama", "google"])
 
 
