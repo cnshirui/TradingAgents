@@ -4,5 +4,5 @@ lang=Chinese
 analysts=all
 depth=Deep
 provider=google
-quickLLM=gemini-3.5-flash
+quickLLM=gemini-3.8-flash
 deepLLM=gemini-3.1-pro-preview
