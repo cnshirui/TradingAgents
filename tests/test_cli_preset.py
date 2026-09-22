@@ -85,3 +85,50 @@ def test_read_analysis_preset_rejects_future_date(tmp_path):
 
     with pytest.raises(ValueError, match="future"):
         read_analysis_preset(preset_file, today=date(2026, 6, 25))
+
+
+def test_bare_preset_path_runs_an_analysis(monkeypatch, tmp_path):
+    """``tradingagents stocks/google/MU.txt`` must keep working now that the app
+    is a command group with a ``backtest`` subcommand."""
+    from typer.testing import CliRunner
+
+    import cli.main as m
+
+    calls = []
+    monkeypatch.setattr(m, "run_analysis", lambda **kw: calls.append(kw))
+    preset = tmp_path / "MU.txt"
+    preset.write_text("symbol=MU\n", encoding="utf-8")
+
+    result = CliRunner().invoke(m.app, [str(preset)])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [{"checkpoint": None, "portfolio": None, "preset_file": preset}]
+
+
+def test_unknown_command_is_still_reported(monkeypatch):
+    from typer.testing import CliRunner
+
+    import cli.main as m
+
+    monkeypatch.setattr(m, "run_analysis", lambda **kw: None)
+    result = CliRunner().invoke(m.app, ["frobnicate"])
+
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
+def test_group_options_reach_a_bare_preset_run(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    import cli.main as m
+
+    calls = []
+    monkeypatch.setattr(m, "run_analysis", lambda **kw: calls.append(kw))
+    preset = tmp_path / "MU.txt"
+    preset.write_text("symbol=MU\n", encoding="utf-8")
+
+    result = CliRunner().invoke(m.app, ["--checkpoint", str(preset)])
+
+    assert result.exit_code == 0, result.output
+    assert calls[0]["checkpoint"] is True
+    assert calls[0]["preset_file"] == preset

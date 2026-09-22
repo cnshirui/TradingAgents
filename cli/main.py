@@ -7,6 +7,7 @@ from functools import wraps
 from pathlib import Path
 
 import typer
+from typer.core import TyperGroup
 from rich import box
 from rich.align import Align
 from rich.console import Console
@@ -72,10 +73,34 @@ if sys.platform == "win32":  # pragma: no cover - platform dependent
 else:
     _NO_CONSOLE_ERRORS = ()
 
+class _PresetAwareGroup(TyperGroup):
+    """Let a bare preset path run an analysis: ``tradingagents stocks/google/MU.txt``.
+
+    Upstream's ``backtest`` subcommand turned the app into a command group, so
+    Click reads the first positional token as a subcommand name. When that
+    token is not a command but names a preset file, route it to ``analyze``.
+    """
+
+    def resolve_command(self, ctx, args):
+        head = args[0] if args else None
+        if head and not head.startswith("-") and self.get_command(ctx, head) is None:
+            if _looks_like_preset(head):
+                return super().resolve_command(ctx, ["analyze", *args])
+        return super().resolve_command(ctx, args)
+
+
+def _looks_like_preset(token: str) -> bool:
+    path = Path(token)
+    return path.suffix == ".txt" or "/" in token or path.is_file() or (
+        Path.cwd() / "stocks" / token
+    ).is_file()
+
+
 app = typer.Typer(
     name="TradingAgents",
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
+    cls=_PresetAwareGroup,
 )
 
 
@@ -1529,6 +1554,7 @@ def analyze(
 
 @app.command("analyze")
 def analyze_command(
+    ctx: typer.Context,
     preset_file: Path | None = typer.Argument(
         None,
         help="Optional key=value preset file (for example MU.txt); looked up as "
@@ -1553,6 +1579,14 @@ def analyze_command(
     ),
 ):
     """Run an analysis, optionally from a preset file (same as the bare command)."""
+    # `tradingagents --checkpoint stocks/google/MU.txt` parses the flag on the
+    # group before the path is routed here, so honor the group's values when
+    # this command's own were left at their defaults.
+    parent = ctx.parent.params if ctx.parent is not None else {}
+    if checkpoint is None:
+        checkpoint = parent.get("checkpoint")
+    clear_checkpoints = clear_checkpoints or bool(parent.get("clear_checkpoints"))
+    portfolio = portfolio or parent.get("portfolio")
     _run_cli_analysis(checkpoint, clear_checkpoints, portfolio, preset_file)
 
 
