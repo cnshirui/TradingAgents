@@ -7,7 +7,13 @@ from types import SimpleNamespace
 import pytest
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.reporting import write_report_tree
+from tradingagents.reporting import complete_report_path, write_report_tree
+
+
+@pytest.mark.unit
+def test_date_precedes_symbol_in_report_filename(tmp_path):
+    run_dir = tmp_path / "MRVL_20261006_082514"
+    assert complete_report_path("MRVL", run_dir).name == "20261006_MRVL.md"
 
 
 def _state():
@@ -59,7 +65,7 @@ def test_write_report_tree_creates_files(tmp_path):
         str(path.relative_to(tmp_path))
         for path in tmp_path.rglob("*")
         if path.is_file()
-    ) == [
+    ) == sorted([
         "1_analysts/fundamentals.md",
         "1_analysts/market.md",
         "1_analysts/news.md",
@@ -75,7 +81,7 @@ def test_write_report_tree_creates_files(tmp_path):
         out.name,
         "complete_report.html",
         "complete_report.md",
-    ]
+    ])
     complete = out.read_text()
     assert "Trading Analysis Report: AAPL" in complete
     assert "MKT" in complete and "PM DECISION" in complete
@@ -100,7 +106,7 @@ def test_save_reports_explicit_path(tmp_path):
     graph = SimpleNamespace(run_settings=lambda: SETTINGS)
     out = TradingAgentsGraph.save_reports(graph, _state(), "AAPL", save_path=tmp_path)
     assert (tmp_path / "complete_report.md").exists()
-    assert out.name.startswith("AAPL_")
+    assert out.name.endswith("_AAPL.md")
 
 
 @pytest.mark.unit
@@ -152,7 +158,7 @@ def test_save_reports_defaults_under_results_dir(tmp_path):
     assert out.exists()
     assert out.parent.parent.name == "reports"  # results_dir/reports/AAPL_<stamp>/...
     assert out.parent.name.startswith("AAPL_")
-    assert out.name == f"{out.parent.name.rsplit('_', 1)[0]}.md"
+    assert out.name == f"{out.parent.name.split('_')[-2]}_AAPL.md"
 
 
 

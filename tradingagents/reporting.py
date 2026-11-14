@@ -1,7 +1,7 @@
 """Reusable report-tree writer shared by the CLI and the programmatic API.
 
 Writes a run's per-section markdown (analysts, research, trading, risk,
-portfolio) plus a consolidated ``<TICKER>_<YYYYMMDD>.md`` under ``save_path``.
+portfolio) plus a consolidated ``<YYYYMMDD>_<TICKER>.md`` under ``save_path``.
 The CLI and ``TradingAgentsGraph.save_reports`` both call this, so a headless /
 API run produces the same on-disk report tree a CLI run does.
 """
@@ -41,7 +41,7 @@ def complete_report_path(ticker: str, save_path: Path) -> Path:
     """Return the consolidated report path for a run directory."""
     match = _RUN_DIR_RE.match(save_path.name)
     report_date = match.group("date") if match else datetime.now().strftime("%Y%m%d")
-    return save_path / f"{_safe_ticker_component(ticker)}_{report_date}.md"
+    return save_path / f"{report_date}_{_safe_ticker_component(ticker)}.md"
 
 
 

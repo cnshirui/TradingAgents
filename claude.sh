@@ -6,7 +6,7 @@
 #   ./claude.sh MUU_20260922.md     # only convert an existing report to PDF
 #   ./claude.sh last                # copy the newest run's report + PDF to the root
 #
-# After each analysis the complete report (<TICKER>_<date>.md) is copied to
+# After each analysis the complete report (<date>_<TICKER>.md) is copied to
 # the project root and a PDF is rendered next to it.
 # All analysis settings live below; only the symbol changes per run.
 set -euo pipefail
@@ -83,18 +83,23 @@ CSS
 # omitted) to the project root and render its PDF. Runs are ordered by the
 # timestamp in the directory name, not by mtime.
 publish_report() {
-  local ticker="${1:-}" dir md base
+  local ticker="${1:-}" dir md base run
   dir="$(ls -d "reports/${ticker}"*_*/ 2>/dev/null | sort -t_ -k2,3 | tail -1)"
   if [ -z "$dir" ]; then
     echo "!! no report directory found for $ticker" >&2
     return
   fi
-  md="$(ls "$dir"*_*.md 2>/dev/null | grep -v complete_report | head -1)"
+  run="$(basename "$dir")"
+  run="${run%_*}"
+  base="${run##*_}_${run%_*}"
+  md="$dir$base.md"
+  if [ ! -f "$md" ]; then
+    md="$(ls "$dir"*_*.md 2>/dev/null | grep -v complete_report | head -1)"
+  fi
   if [ -z "$md" ]; then
     echo "!! no complete report found in $dir" >&2
     return
   fi
-  base="$(basename "$md" .md)"
   cp "$md" "./$base.md"
   echo "Complete report: $base.md"
   md_to_pdf "./$base.md" "./$base.pdf" || true
