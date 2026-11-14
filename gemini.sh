@@ -34,8 +34,10 @@ eval "$(conda shell.bash hook)"
 conda activate tradingagents
 
 # md_to_pdf FILE.md OUT.pdf
-# pandoc turns the markdown into HTML; headless Chrome prints it to PDF (its
-# font stack handles Chinese).
+# pandoc turns the markdown into HTML; headless Chrome prints it to PDF.
+# The body font is STHeiti on purpose: Chrome cannot embed PingFang SC as a
+# real font subset and draws every glyph as a Type3 outline instead, which
+# doubles the file size. STHeiti embeds as a normal subset.
 md_to_pdf() {
   local md="$1" pdf="$2" base html css
   if [ ! -f "$md" ]; then
@@ -50,7 +52,7 @@ md_to_pdf() {
   html="$(mktemp -t "$base.XXXXXX").html"
   css="${html%.html}.css"
   cat > "$css" <<'CSS'
-body { font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Helvetica Neue", Arial, sans-serif; font-size: 11pt; line-height: 1.5; max-width: 900px; margin: 0 auto; padding: 24px; color: #222; }
+body { font-family: "STHeiti", "Songti SC", "Helvetica Neue", Arial, sans-serif; font-size: 11pt; line-height: 1.5; max-width: 900px; margin: 0 auto; padding: 24px; color: #222; }
 h1 { font-size: 20pt; border-bottom: 2px solid #444; padding-bottom: 4px; }
 h2 { font-size: 16pt; margin-top: 1.6em; border-bottom: 1px solid #999; }
 h3 { font-size: 13pt; margin-top: 1.2em; }
