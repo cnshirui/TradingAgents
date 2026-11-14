@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from cli.models import AnalystType
-from cli.utils import read_analysis_preset
+from cli.prompts import read_analysis_preset
 
 
 def test_read_analysis_preset_maps_interactive_choices(tmp_path):
